@@ -8,81 +8,115 @@ from langchain_community.tools import WikipediaQueryRun, DuckDuckGoSearchRun
 from langchain_classic.agents import initialize_agent, AgentType, Tool
 from langchain_classic.callbacks import StreamlitCallbackHandler
 
-wiki = WikipediaQueryRun(
-    api_wrapper=WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=250)
-)
-search = DuckDuckGoSearchRun(name="Search")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="Math Problem Solver")
+st.title("🧠 Text to Math Problem Solver")
 
-st.set_page_config(page_title="Text to Math problem solver")
-st.title("Text to Math problem solver")
-
-groq_api_key = st.sidebar.text_input(label="Groq API Key", type="password")
+# ---------------- API KEY ----------------
+groq_api_key = st.sidebar.text_input("Groq API Key", type="password")
 
 if not groq_api_key:
     st.info("Please provide your GROQ API Key")
     st.stop()
 
-llm = ChatGroq(model="qwen/qwen3-32b", groq_api_key=groq_api_key)
+# ---------------- LLM ----------------
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",   # Better than qwen for agents
+    groq_api_key=groq_api_key,
+    temperature=0
+)
 
-# Tools
+# ---------------- TOOLS ----------------
+wiki = WikipediaQueryRun(
+    api_wrapper=WikipediaAPIWrapper(
+        top_k_results=1,
+        doc_content_chars_max=250
+    )
+)
+
+search = DuckDuckGoSearchRun(name="Search")
+
+# Calculator Tool
 math_chain = LLMMathChain.from_llm(llm=llm, verbose=True)
+
 calculator = Tool(
     name="Calculator",
     func=math_chain.run,
-    description="Tool to answer math problems. Only input mathematical expression needs to be provided",
+    description="Useful for solving mathematical calculations."
 )
 
+# Reasoning Tool
 prompt = """
-You are a agent for solving user's mathematical questions. 
-Logically arrive at a solution and display it with point wise for the question below
-Question : {question}
+You are an expert reasoning assistant.
+
+Solve the user's question step-by-step clearly.
+
+Question: {question}
+
 Answer:
 """
 
-template = PromptTemplate(input_variables=["question"], template=prompt)
+template = PromptTemplate(
+    input_variables=["question"],
+    template=prompt
+)
 
-# Combine all the tools into chain
-chain = LLMChain(llm=llm, prompt=template)
+reasoning_chain = LLMChain(llm=llm, prompt=template)
+
 reasoning_tool = Tool(
-    name="Reasoning tool",
-    func=chain.run,
-    description="Tool for answering logic based and reasoning questions.",
+    name="ReasoningTool",
+    func=reasoning_chain.run,
+    description="Useful for logical reasoning and word problems."
 )
 
-
-# Agents
+# ---------------- AGENT ----------------
 agent = initialize_agent(
-    tools=[wiki, reasoning_tool, calculator, search],
+    tools=[calculator, reasoning_tool, wiki, search],
     llm=llm,
-    agent=AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=False,
-    handle_parsing_error=True,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,   # more stable
+    verbose=True,
+    handle_parsing_errors=True
 )
 
+# ---------------- SESSION ----------------
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi, I can answer your any Math Problem"}
+        {"role": "assistant", "content": "Hi 👋 Ask me any math problem."}
     ]
 
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-
-# Lets start the interaction
+# ---------------- INPUT ----------------
 question = st.text_area(
-    "Enter your question: ", "What is area of circle with radius 4?"
+    "Enter your question:",
+    "What is area of circle with radius 4?"
 )
 
+# ---------------- RUN ----------------
 if st.button("Find Answer"):
-    if question:
-        with st.spinner("Generate response..."):
-            st.session_state.messages.append({"role": "user", "content": question})
-            st.chat_message("user").write(question)
+    if question.strip():
 
-            st_cb = StreamlitCallbackHandler(st.container(), expand_new_thoughts=False)
-            response = agent.run(st.session_state.messages, callbacks=[st_cb])
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            st.write("### Response:")
-            st.success(response)
+        st.session_state.messages.append(
+            {"role": "user", "content": question}
+        )
+        st.chat_message("user").write(question)
+
+        with st.spinner("Generating response..."):
+
+            st_cb = StreamlitCallbackHandler(
+                st.container(),
+                expand_new_thoughts=False
+            )
+
+            # IMPORTANT FIX:
+            response = agent.run(question, callbacks=[st_cb])
+
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response}
+            )
+
+            st.chat_message("assistant").write(response)
+
     else:
-        st.warning("Please enter your question")
+        st.warning("Please enter your question.")
