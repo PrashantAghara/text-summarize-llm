@@ -1,4 +1,5 @@
 import streamlit as st
+
 from langchain_groq import ChatGroq
 from langchain_classic.chains.llm_math.base import LLMMathChain
 from langchain_classic.chains.llm import LLMChain
@@ -8,25 +9,38 @@ from langchain_community.tools import WikipediaQueryRun, DuckDuckGoSearchRun
 from langchain_classic.agents import initialize_agent, AgentType, Tool
 from langchain_classic.callbacks import StreamlitCallbackHandler
 
-# ---------------- PAGE CONFIG ----------------
-st.set_page_config(page_title="Math Problem Solver")
+# ---------------------------------------------------
+# PAGE CONFIG
+# ---------------------------------------------------
+st.set_page_config(page_title="Math Problem Solver", page_icon="🧠")
 st.title("🧠 Text to Math Problem Solver")
 
-# ---------------- API KEY ----------------
-groq_api_key = st.sidebar.text_input("Groq API Key", type="password")
+# ---------------------------------------------------
+# API KEY
+# ---------------------------------------------------
+groq_api_key = st.sidebar.text_input(
+    "Enter Groq API Key",
+    type="password"
+)
 
 if not groq_api_key:
-    st.info("Please provide your GROQ API Key")
+    st.info("Please enter your Groq API key in sidebar.")
     st.stop()
 
-# ---------------- LLM ----------------
+# ---------------------------------------------------
+# LLM
+# ---------------------------------------------------
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",   # Better than qwen for agents
+    model="llama-3.3-70b-versatile",
     groq_api_key=groq_api_key,
     temperature=0
 )
 
-# ---------------- TOOLS ----------------
+# ---------------------------------------------------
+# TOOLS
+# ---------------------------------------------------
+
+# Wikipedia Tool
 wiki = WikipediaQueryRun(
     api_wrapper=WikipediaAPIWrapper(
         top_k_results=1,
@@ -34,10 +48,14 @@ wiki = WikipediaQueryRun(
     )
 )
 
+# Search Tool
 search = DuckDuckGoSearchRun(name="Search")
 
 # Calculator Tool
-math_chain = LLMMathChain.from_llm(llm=llm, verbose=True)
+math_chain = LLMMathChain.from_llm(
+    llm=llm,
+    verbose=False
+)
 
 calculator = Tool(
     name="Calculator",
@@ -46,77 +64,103 @@ calculator = Tool(
 )
 
 # Reasoning Tool
-prompt = """
+prompt_template = """
 You are an expert reasoning assistant.
 
-Solve the user's question step-by-step clearly.
+Solve the user question clearly and step-by-step.
 
 Question: {question}
 
 Answer:
 """
 
-template = PromptTemplate(
+prompt = PromptTemplate(
     input_variables=["question"],
-    template=prompt
+    template=prompt_template
 )
 
-reasoning_chain = LLMChain(llm=llm, prompt=template)
+reasoning_chain = LLMChain(
+    llm=llm,
+    prompt=prompt
+)
 
 reasoning_tool = Tool(
     name="ReasoningTool",
     func=reasoning_chain.run,
-    description="Useful for logical reasoning and word problems."
+    description="Useful for logic, reasoning, and word problems."
 )
 
-# ---------------- AGENT ----------------
+# ---------------------------------------------------
+# AGENT
+# ---------------------------------------------------
 agent = initialize_agent(
     tools=[calculator, reasoning_tool, wiki, search],
     llm=llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,   # more stable
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
     verbose=True,
     handle_parsing_errors=True
 )
 
-# ---------------- SESSION ----------------
+# ---------------------------------------------------
+# SESSION STATE
+# ---------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi 👋 Ask me any math problem."}
+        {
+            "role": "assistant",
+            "content": "Hi 👋 Ask me any math problem."
+        }
     ]
 
+# Show previous messages
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-# ---------------- INPUT ----------------
+# ---------------------------------------------------
+# INPUT
+# ---------------------------------------------------
 question = st.text_area(
     "Enter your question:",
     "What is area of circle with radius 4?"
 )
 
-# ---------------- RUN ----------------
+# ---------------------------------------------------
+# BUTTON
+# ---------------------------------------------------
 if st.button("Find Answer"):
+
     if question.strip():
 
+        # Show user message
         st.session_state.messages.append(
             {"role": "user", "content": question}
         )
         st.chat_message("user").write(question)
 
-        with st.spinner("Generating response..."):
+        with st.spinner("Generating answer..."):
 
-            st_cb = StreamlitCallbackHandler(
-                st.container(),
-                expand_new_thoughts=False
-            )
+            try:
+                st_cb = StreamlitCallbackHandler(
+                    st.container(),
+                    expand_new_thoughts=False
+                )
 
-            # IMPORTANT FIX:
-            response = agent.run(question, callbacks=[st_cb])
+                response = agent.invoke(
+                    {"input": question},
+                    config={"callbacks": [st_cb]}
+                )
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": response}
-            )
+                answer = response["output"]
 
-            st.chat_message("assistant").write(response)
+            except Exception as e:
+                answer = f"Error: {str(e)}"
+
+        # Show assistant message
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
+
+        st.chat_message("assistant").write(answer)
 
     else:
-        st.warning("Please enter your question.")
+        st.warning("Please enter a question.")
