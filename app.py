@@ -1,85 +1,88 @@
-import validators
 import streamlit as st
-from langchain_core.prompts import PromptTemplate
 from langchain_groq import ChatGroq
-from langchain_classic.chains.summarize import load_summarize_chain
-from langchain_community.document_loaders import UnstructuredURLLoader
-from youtube_transcript_api import YouTubeTranscriptApi
-from langchain_core.documents import Document
-from urllib.parse import urlparse, parse_qs
+from langchain_classic.chains.llm_math.base import LLMMathChain
+from langchain_classic.chains.llm import LLMChain
+from langchain_core.prompts import PromptTemplate
+from langchain_community.utilities import WikipediaAPIWrapper
+from langchain_community.tools import WikipediaQueryRun, DuckDuckGoSearchRun
+from langchain_classic.agents import initialize_agent, AgentType, Tool
+from langchain_classic.callbacks import StreamlitCallbackHandler
 
+wiki = WikipediaQueryRun(
+    api_wrapper=WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=250)
+)
+search = DuckDuckGoSearchRun(name="Search")
 
-def extract_video_id(url):
-    parsed = urlparse(url)
-    if parsed.hostname == "youtu.be":
-        return parsed.path[1:]
-    if parsed.hostname and "youtube.com" in parsed.hostname:
-        return parse_qs(parsed.query).get("v", [None])[0]
-    return None
+st.set_page_config(page_title="Text to Math problem solver")
+st.title("Text to Math problem solver")
 
+groq_api_key = st.sidebar.text_input(label="Groq API Key", type="password")
 
-def load_youtube_docs_chunked(url):
-    video_id = extract_video_id(url)
-    api = YouTubeTranscriptApi()
-    transcript = api.fetch(video_id)
-    docs = []
-    for item in transcript:
-        docs.append(
-            Document(
-                page_content=item.text,
-                metadata={
-                    "source": url,
-                    "start": item.start,
-                    "duration": item.duration,
-                },
-            )
-        )
-    return docs
+if not groq_api_key:
+    st.info("Please provide your GROQ API Key")
+    st.stop()
 
+llm = ChatGroq(model="qwen/qwen3-32b", groq_api_key=groq_api_key)
 
-# Streamlit App
-st.set_page_config(page_title="Summarize text from Websites")
-st.title("Summarize text from your Websites")
-st.subheader("Summarize URL")
+# Tools
+math_chain = LLMMathChain.from_llm(llm=llm, verbose=True)
+calculator = Tool(
+    name="Calculator",
+    func=math_chain.run,
+    description="Tool to answer math problems. Only input mathematical expression needs to be provided",
+)
 
-with st.sidebar:
-    api_key = st.text_input("GROQ API Key", value="", type="password")
-
-url = st.text_input("URL", label_visibility="collapsed")
-
-llm = ChatGroq(model="llama-3.3-70b-versatile", groq_api_key=api_key, streaming=True)
-
-prompt_template = """
-Provide a summary of the following content in 300 words :
-{text}
+prompt = """
+You are a agent for solving user's mathematical questions. 
+Logically arrive at a solution and display it with point wise for the question below
+Question : {question}
+Answer:
 """
 
-prompt = PromptTemplate(template=prompt_template, input_variables=["text"])
+template = PromptTemplate(input_variables=["question"], template=prompt)
 
-if st.button("Summarize"):
-    if not api_key.strip() or not url.strip():
-        st.error("Please provide the information to get started")
-    elif not validators.url(url):
-        st.error("Please enter a valid URL.")
+# Combine all the tools into chain
+chain = LLMChain(llm=llm, prompt=template)
+reasoning_tool = Tool(
+    name="Reasoning tool",
+    func=chain.run,
+    description="Tool for answering logic based and reasoning questions.",
+)
+
+
+# Agents
+agent = initialize_agent(
+    tools=[wiki, reasoning_tool, calculator, search],
+    llm=llm,
+    agent=AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+    verbose=False,
+    handle_parsing_error=True,
+)
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Hi, I can answer your any Math Problem"}
+    ]
+
+for msg in st.session_state.messages:
+    st.chat_message(msg["role"]).write(msg["content"])
+
+
+# Lets start the interaction
+question = st.text_area(
+    "Enter your question: ", "What is area of circle with radius 4?"
+)
+
+if st.button("Find Answer"):
+    if question:
+        with st.spinner("Generate response..."):
+            st.session_state.messages.append({"role": "user", "content": question})
+            st.chat_message("user").write(question)
+
+            st_cb = StreamlitCallbackHandler(st.container(), expand_new_thoughts=False)
+            response = agent.run(st.session_state.messages, callbacks=[st_cb])
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.write("### Response:")
+            st.success(response)
     else:
-        try:
-            with st.spinner("Waiting..."):
-                # loading the data
-                if "youtube.com" in url:
-                    docs = load_youtube_docs_chunked(url)
-                else:
-                    loader = UnstructuredURLLoader(
-                        urls=[url],
-                        ssl_verify=False,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
-                        },
-                    )
-                    docs = loader.load()
-                chain = load_summarize_chain(llm=llm, chain_type="stuff", prompt=prompt)
-                summary = chain.run(docs)
-
-                st.success(summary)
-        except Exception as e:
-            print(e)
-            st.exception(f"Exception : {e}")
+        st.warning("Please enter your question")
